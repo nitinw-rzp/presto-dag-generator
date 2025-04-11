@@ -20,9 +20,9 @@ st.header("Upload SQL Files")
 uploaded_files = st.file_uploader("Upload your SQL files", type="sql", accept_multiple_files=True)
 
 # --- Paths ---
-basepath_default = '/presto-dag-generator/sql-files/'
-template_path_default = '/presto-dag-generator/dag_template.py'
-output_dir_default = '/presto-dag-generator/generated-dags'
+basepath_default = '/workspaces/presto-dag-generator/sql-files/'
+template_path_default = '/workspaces/presto-dag-generator/dag_template.py'
+output_dir_default = '/workspaces/presto-dag-generator/generated-dags'
 
 basepath = st.text_input("SQL Files Directory", basepath_default)
 template_path = st.text_input("DAG Template File Path", template_path_default)
