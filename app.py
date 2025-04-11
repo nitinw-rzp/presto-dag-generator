@@ -17,8 +17,14 @@ user_emails = [email.strip() for email in user_emails_input.split(',') if email.
 email_ids = [dag_owner_id] + [email for email in user_emails if email != dag_owner_id]
 
 # --- File Upload Section ---
-st.header("Upload SQL Files")
-uploaded_files = st.file_uploader("Upload your SQL files", type="sql", accept_multiple_files=True)
+st.header("Upload SQL Files in Order")
+num_files = st.number_input("How many SQL files do you want to upload?", min_value=1, max_value=20, step=1)
+
+uploaded_files_map = {}
+for i in range(1, num_files + 1):
+    uploaded_file = st.file_uploader(f"Upload SQL File #{i}", type="sql", key=f"sql_file_{i}")
+    if uploaded_file:
+        uploaded_files_map[f"file_{i}"] = uploaded_file
 
 # --- Paths ---
 basepath_default = 'sql-files'
@@ -30,8 +36,8 @@ template_path = st.text_input("DAG Template File Path", template_path_default)
 output_dir = st.text_input("Output DAG Directory", output_dir_default)
 
 if st.button("Generate DAG"):
-    if not uploaded_files:
-        st.error("Please upload at least one SQL file.")
+    if len(uploaded_files_map) != num_files:
+        st.error("Please upload all the SQL files in the order specified.")
     elif not os.path.exists(template_path):
         st.error(f"Template file not found at: {template_path}")
     else:
@@ -62,70 +68,55 @@ if st.button("Generate DAG"):
                 email_callback
             )
 
-            # Load SQL files and generate tasks
+            # Generate DAG content
             sql_blocks = []
             presto_tasks = []
             dependency_chain_tasks = []
 
             os.makedirs(basepath, exist_ok=True)
-            for i, uploaded_file in enumerate(uploaded_files):
+
+            for i, (key, uploaded_file) in enumerate(uploaded_files_map.items()):
                 file_path = os.path.join(basepath, uploaded_file.name)
-                try:
-                    with open(file_path, 'wb') as f:
-                        f.write(uploaded_file.getbuffer())
+                with open(file_path, 'wb') as f:
+                    f.write(uploaded_file.getbuffer())
 
-                    sql_var = f"sql{i+1}"
-                    task_var = f"presto_task{i+1}"
+                sql_var = f"sql{i+1}"
+                task_var = f"presto_task{i+1}"
 
-                    # Read SQL content
-                    with open(file_path, 'r') as sql_file:
-                        content = sql_file.read().strip()
+                with open(file_path, 'r') as sql_file:
+                    content = sql_file.read().strip()
 
-                    # SQL variable
-                    sql_blocks.append(f'\n{sql_var} = """{content}"""\n\n')
+                sql_blocks.append(f'\n{sql_var} = """{content}"""\n\n')
 
-                    # Presto task
-                    presto_tasks.append(
-                        f"""{task_var} = PythonOperator(
+                presto_tasks.append(
+                    f"""{task_var} = PythonOperator(
     task_id='ExecutePrestoQuery{i+1}',
     python_callable=presto.execute_presto_query_cli,
     op_kwargs={{'query': {sql_var}, 'user': DAG_OWNER}},
     dag=dag,
 )\n\n"""
-                    )
+                )
+                dependency_chain_tasks.append(task_var)
 
-                    # Dependency tracking
-                    dependency_chain_tasks.append(task_var)
+            dependency_chain = " >> ".join(dependency_chain_tasks)
 
-                except Exception as e:
-                    st.error(f"Error processing file {uploaded_file.name}: {e}")
-                    break
-            else:
-                # Define task dependencies
-                dependency_chain = " >> ".join(dependency_chain_tasks)
+            final_dag_content = updated_content + "\n\n" + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
 
-                # Final DAG content
-                final_dag_content = updated_content + "\n\n" + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
+            os.makedirs(output_dir, exist_ok=True)
+            output_filename = os.path.join(output_dir, f"{dag_name}.py")
 
-                # Save DAG to file
-                os.makedirs(output_dir, exist_ok=True)
-                output_filename = os.path.join(output_dir, f"{dag_name}.py")
-                try:
-                    with open(output_filename, 'w') as f:
-                        f.write(final_dag_content)
+            with open(output_filename, 'w') as f:
+                f.write(final_dag_content)
 
-                    st.success(f"DAG generated and saved as: {output_filename}")
+            st.success(f"DAG generated and saved as: {output_filename}")
 
-                    # ✅ Download link
-                    b64 = base64.b64encode(final_dag_content.encode()).decode()
-                    href = f'<a href="data:file/text;base64,{b64}" download="{dag_name}.py">📥 Download {dag_name}.py</a>'
-                    st.markdown(href, unsafe_allow_html=True)
+            # ✅ Download link
+            b64 = base64.b64encode(final_dag_content.encode()).decode()
+            href = f'<a href="data:file/text;base64,{b64}" download="{dag_name}.py">📥 Download {dag_name}.py</a>'
+            st.markdown(href, unsafe_allow_html=True)
 
-                    # ✅ Optional: Show contents
-                    st.text_area("Generated DAG File Content", final_dag_content, height=400)
-
-                except Exception as e:
-                    st.error(f"Error saving DAG file: {e}")
+            # ✅ Show contents
+            st.text_area("Generated DAG File Content", final_dag_content, height=400)
 
         except ValueError:
             st.error("Invalid date format for DAG Start Date. Please use YYYY-MM-DD.")
