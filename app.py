@@ -20,9 +20,9 @@ st.header("Upload SQL Files")
 uploaded_files = st.file_uploader("Upload your SQL files", type="sql", accept_multiple_files=True)
 
 # --- Paths ---
-basepath_default = '/sql-files/'
+basepath_default = 'sql-files'
 template_path_default = 'dag_template.py'
-output_dir_default = '/generated-dags/'
+output_dir_default = 'generated-dags'
 
 basepath = st.text_input("SQL Files Directory", basepath_default)
 template_path = st.text_input("DAG Template File Path", template_path_default)
