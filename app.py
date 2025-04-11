@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import datetime
+import base64
 from functools import partial
 
 st.title("Dynamic Airflow DAG Generator")
@@ -44,7 +45,7 @@ if st.button("Generate DAG"):
 
             # Replace placeholders
             formatted_emails = ", ".join([f'"{email.strip()}"' for email in email_ids])
-            email_callback = f'partial(email.send_mail_slack, [{formatted_emails}])' # Assuming 'email' module is available
+            email_callback = f'partial(email.send_mail_slack, [{formatted_emails}])'
 
             updated_content = template_content.replace("DAG_OWNER = ''", f'DAG_OWNER = "{dag_owner_id}"')
             updated_content = updated_content.replace(
@@ -103,16 +104,26 @@ if st.button("Generate DAG"):
                 # Define task dependencies
                 dependency_chain = " >> ".join(dependency_chain_tasks)
 
-                # Append all generated code to the template
+                # Final DAG content
                 final_dag_content = updated_content + "\n\n" + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
 
-                # Save Final DAG
+                # Save DAG to file
                 os.makedirs(output_dir, exist_ok=True)
                 output_filename = os.path.join(output_dir, f"{dag_name}.py")
                 try:
                     with open(output_filename, 'w') as f:
                         f.write(final_dag_content)
+
                     st.success(f"DAG generated and saved as: {output_filename}")
+
+                    # ✅ Download link
+                    b64 = base64.b64encode(final_dag_content.encode()).decode()
+                    href = f'<a href="data:file/text;base64,{b64}" download="{dag_name}.py">📥 Download {dag_name}.py</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+
+                    # ✅ Optional: Show contents
+                    st.text_area("Generated DAG File Content", final_dag_content, height=400)
+
                 except Exception as e:
                     st.error(f"Error saving DAG file: {e}")
 
