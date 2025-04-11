@@ -9,7 +9,7 @@ from dags.lib import email
 from dags.lib import presto
 
 DAG_OWNER = ''
-dag_start_dt = datetime(2023, 10, 7) # this should be replaced
+dag_start_dt = datetime(2023, 10, 7)
 
 
 default_args = {
