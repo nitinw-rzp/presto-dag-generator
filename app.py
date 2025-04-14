@@ -6,7 +6,42 @@ from functools import partial
 
 st.title("Dynamic Airflow DAG Generator")
 
-# --- Input Section ---
+# --- Custom CSS ---
+st.markdown(
+    """
+    <style>
+    .stDownloadButton, .stButton>button {
+        background-color: rgb(92, 146, 246) !important;
+        color: white !important;
+        padding: 10px 24px !important;
+        border-radius: 5px !important;
+        font-size: 18px !important;
+        margin: 4px 2px !important;
+        cursor: pointer !important;
+        transition: background-color 0.3s ease !important;
+    }
+    .stDownloadButton:hover, .stButton>button:hover {
+        background-color: #4CAF50 !important;
+    }
+    .stDownloadButton {
+        text-decoration: none !important;
+    }
+    .bottom-right-text {
+        position: fixed;
+        bottom: 10px;
+        right: 10px;
+        font-size: 0.9em;
+        color: #888;
+    }
+    .razorpay-blue {
+        color: #3366FF;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- DAG Config ---
 st.header("DAG Configuration")
 dag_name = st.text_input("DAG Name", "my_dynamic_dag")
 dag_owner_id = st.text_input("DAG Owner Email", "you@example.com")
@@ -16,40 +51,67 @@ user_emails_input = st.text_input("Additional Email Recipients (comma-separated)
 user_emails = [email.strip() for email in user_emails_input.split(',') if email.strip()]
 email_ids = [dag_owner_id] + [email for email in user_emails if email != dag_owner_id]
 
-# --- File Upload Section ---
+# --- Sensor Config ---
+sensor_required = st.checkbox("Is Sensor Required?")
+if sensor_required:
+    external_dag_id = st.text_input("External DAG ID", "")
+    execution_delta_mins = st.number_input("Execution Delta (in minutes)", min_value=0, value=75)
+
+# --- SQL Upload ---
 st.header("Upload SQL Files in Order")
 num_files = st.number_input("How many SQL files do you want to upload?", min_value=1, max_value=20, step=1)
-
 uploaded_files_map = {}
 for i in range(1, num_files + 1):
     uploaded_file = st.file_uploader(f"Upload SQL File #{i}", type="sql", key=f"sql_file_{i}")
     if uploaded_file:
         uploaded_files_map[f"file_{i}"] = uploaded_file
 
-# --- Paths ---
-basepath_default = 'sql-files'
-template_path_default = 'dag_template.py'
-output_dir_default = 'generated-dags'
+# --- Custom Task Dependency ---
+custom_dependency = st.checkbox("Custom Task Dependency?")
 
-basepath = st.text_input("SQL Files Directory", basepath_default)
-template_path = st.text_input("DAG Template File Path", template_path_default)
-output_dir = st.text_input("Output DAG Directory", output_dir_default)
+task_name_map = {}
+task_order_options = []
+
+if sensor_required:
+    sensor_task_id = f"{external_dag_id}_trigger"
+    task_name_map[sensor_task_id] = sensor_task_id
+    task_order_options.append(sensor_task_id)
+
+for i in range(1, num_files + 1):
+    task_id = f"ExecutePrestoQuery{i}"
+    task_var = f"presto_task{i}"
+    task_name_map[task_id] = task_var
+    task_order_options.append(task_id)
+
+custom_task_order = []
+if custom_dependency:
+    st.subheader("Define Custom Execution Order")
+    used = set()
+    for step in range(len(task_order_options)):
+        remaining = [t for t in task_order_options if t not in used]
+        selected = st.selectbox(f"Step {step + 1}", remaining, key=f"step_{step}")
+        custom_task_order.append(selected)
+        used.add(selected)
+
+# --- Paths ---
+basepath = st.text_input("SQL Files Directory", 'sql-files')
+template_path = st.text_input("DAG Template File Path", 'dag_template.py')
+output_dir = st.text_input("Output DAG Directory", 'generated-dags')
 
 if st.button("Generate DAG"):
     if len(uploaded_files_map) != num_files:
         st.error("Please upload all the SQL files in the order specified.")
     elif not os.path.exists(template_path):
         st.error(f"Template file not found at: {template_path}")
+    elif sensor_required and not external_dag_id:
+        st.error("Please fill in External DAG ID.")
     else:
         try:
-            # Parse date
             dag_start_dt = datetime.datetime.strptime(dag_start_dt_input, "%Y-%m-%d")
 
-            # Read the Template
             with open(template_path, 'r') as f:
                 template_content = f.read()
 
-            # Replace placeholders
             formatted_emails = ", ".join([f'"{email.strip()}"' for email in email_ids])
             email_callback = f'partial(email.send_mail_slack, [{formatted_emails}])'
 
@@ -68,7 +130,12 @@ if st.button("Generate DAG"):
                 email_callback
             )
 
-            # Generate DAG content
+            if sensor_required:
+                updated_content = updated_content.replace(
+                    "from datetime import datetime, timedelta",
+                    "from datetime import datetime, timedelta\nfrom airflow.sensors.external_task import ExternalTaskSensor"
+                )
+
             sql_blocks = []
             presto_tasks = []
             dependency_chain_tasks = []
@@ -98,9 +165,33 @@ if st.button("Generate DAG"):
                 )
                 dependency_chain_tasks.append(task_var)
 
-            dependency_chain = " >> ".join(dependency_chain_tasks)
+            sensor_code = ""
+            if sensor_required:
+                hours = execution_delta_mins // 60
+                mins = execution_delta_mins % 60
+                sensor_code = f"""
+{external_dag_id}_trigger = ExternalTaskSensor(
+    task_id='{external_dag_id}_trigger',
+    external_dag_id='{external_dag_id}',
+    external_task_id=None,
+    allowed_states=['success'],
+    failed_states=['failed'],
+    execution_delta = timedelta(hours={hours}, minutes={mins}),
+    dag=dag,
+)\n\n"""
+                if not custom_dependency:
+                    dependency_chain_tasks.append(f"{external_dag_id}_trigger")
 
-            final_dag_content = updated_content + "\n\n" + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
+            if custom_dependency:
+                try:
+                    dependency_chain = " >> ".join([task_name_map[task_id] for task_id in custom_task_order])
+                except KeyError as e:
+                    st.error(f"Invalid task selected in custom dependency: {e}")
+                    st.stop()
+            else:
+                dependency_chain = " >> ".join(dependency_chain_tasks)
+
+            final_dag_content = updated_content + "\n\n" + sensor_code + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
 
             os.makedirs(output_dir, exist_ok=True)
             output_filename = os.path.join(output_dir, f"{dag_name}.py")
@@ -110,15 +201,23 @@ if st.button("Generate DAG"):
 
             st.success(f"DAG generated and saved as: {output_filename}")
 
-            # ✅ Download link
             b64 = base64.b64encode(final_dag_content.encode()).decode()
-            href = f'<a href="data:file/text;base64,{b64}" download="{dag_name}.py">📥 Download {dag_name}.py</a>'
+            href = f'<a class="stDownloadButton" href="data:file/text;base64,{b64}" download="{dag_name}.py">\ud83d\udcc5 Download {dag_name}.py</a>'
             st.markdown(href, unsafe_allow_html=True)
 
-            # ✅ Show contents
             st.text_area("Generated DAG File Content", final_dag_content, height=400)
 
         except ValueError:
             st.error("Invalid date format for DAG Start Date. Please use YYYY-MM-DD.")
         except Exception as e:
             st.error(f"An unexpected error occurred: {e}")
+
+# --- Bottom Right ---
+st.markdown(
+    """
+    <div class="bottom-right-text">
+        DSE Team @<span class="razorpay-blue">Razorpay</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
