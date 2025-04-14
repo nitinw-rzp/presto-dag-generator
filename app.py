@@ -41,7 +41,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- DAG Config ---
+# --- DAG Configuration ---
 st.header("DAG Configuration")
 dag_name = st.text_input("DAG Name", "my_dynamic_dag")
 dag_owner_id = st.text_input("DAG Owner Email", "you@example.com")
@@ -51,7 +51,7 @@ user_emails_input = st.text_input("Additional Email Recipients (comma-separated)
 user_emails = [email.strip() for email in user_emails_input.split(',') if email.strip()]
 email_ids = [dag_owner_id] + [email for email in user_emails if email != dag_owner_id]
 
-# --- Sensor Config ---
+# --- Sensor Configuration ---
 sensor_required = st.checkbox("Is Sensor Required?")
 if sensor_required:
     external_dag_id = st.text_input("External DAG ID", "")
@@ -66,9 +66,11 @@ for i in range(1, num_files + 1):
     if uploaded_file:
         uploaded_files_map[f"file_{i}"] = uploaded_file
 
-# --- Custom Task Dependency ---
-custom_dependency = st.checkbox("Custom Task Dependency?")
+# --- Dependency Flow Selection ---
+st.subheader("Task Dependency Flow")
+flow_type = st.radio("Select flow type", ["Sequential", "Parallel", "Mixed"], index=0)
 
+# --- Task Identification ---
 task_name_map = {}
 task_order_options = []
 
@@ -83,20 +85,30 @@ for i in range(1, num_files + 1):
     task_name_map[task_id] = task_var
     task_order_options.append(task_id)
 
+# --- Custom Task Order ---
 custom_task_order = []
-if custom_dependency:
-    st.subheader("Define Custom Execution Order")
-    used = set()
-    for step in range(len(task_order_options)):
-        remaining = [t for t in task_order_options if t not in used]
+st.subheader("Define Custom Execution Order")
+used = set()
+for step in range(len(task_order_options)):
+    remaining = [t for t in task_order_options if t not in used]
+    if flow_type == "Mixed":
+        selected = st.multiselect(f"Step {step + 1}", remaining, key=f"step_{step}")
+        if selected:
+            custom_task_order.append(selected if len(selected) > 1 else selected[0])
+            used.update(selected)
+    elif flow_type == "Sequential":
         selected = st.selectbox(f"Step {step + 1}", remaining, key=f"step_{step}")
         custom_task_order.append(selected)
         used.add(selected)
 
 # --- Paths ---
-basepath = st.text_input("SQL Files Directory", 'sql-files')
-template_path = st.text_input("DAG Template File Path", 'dag_template.py')
-output_dir = st.text_input("Output DAG Directory", 'generated-dags')
+basepath_default = 'sql-files'
+template_path_default = 'dag_template.py'
+output_dir_default = 'generated-dags'
+
+basepath = st.text_input("SQL Files Directory", basepath_default)
+template_path = st.text_input("DAG Template File Path", template_path_default)
+output_dir = st.text_input("Output DAG Directory", output_dir_default)
 
 if st.button("Generate DAG"):
     if len(uploaded_files_map) != num_files:
@@ -138,8 +150,6 @@ if st.button("Generate DAG"):
 
             sql_blocks = []
             presto_tasks = []
-            dependency_chain_tasks = []
-
             os.makedirs(basepath, exist_ok=True)
 
             for i, (key, uploaded_file) in enumerate(uploaded_files_map.items()):
@@ -154,16 +164,12 @@ if st.button("Generate DAG"):
                     content = sql_file.read().strip()
 
                 sql_blocks.append(f'\n{sql_var} = """{content}"""\n\n')
-
-                presto_tasks.append(
-                    f"""{task_var} = PythonOperator(
+                presto_tasks.append(f"""{task_var} = PythonOperator(
     task_id='ExecutePrestoQuery{i+1}',
     python_callable=presto.execute_presto_query_cli,
     op_kwargs={{'query': {sql_var}, 'user': DAG_OWNER}},
     dag=dag,
-)\n\n"""
-                )
-                dependency_chain_tasks.append(task_var)
+)\n\n""")
 
             sensor_code = ""
             if sensor_required:
@@ -179,17 +185,17 @@ if st.button("Generate DAG"):
     execution_delta = timedelta(hours={hours}, minutes={mins}),
     dag=dag,
 )\n\n"""
-                if not custom_dependency:
-                    dependency_chain_tasks.append(f"{external_dag_id}_trigger")
 
-            if custom_dependency:
-                try:
-                    dependency_chain = " >> ".join([task_name_map[task_id] for task_id in custom_task_order])
-                except KeyError as e:
-                    st.error(f"Invalid task selected in custom dependency: {e}")
-                    st.stop()
+            if flow_type == "Parallel":
+                dependency_chain = f"[{', '.join([task_name_map[t] for t in task_order_options])}]"
             else:
-                dependency_chain = " >> ".join(dependency_chain_tasks)
+                chain_parts = []
+                for step in custom_task_order:
+                    if isinstance(step, list):
+                        chain_parts.append(f"[{', '.join([task_name_map[t] for t in step])}]")
+                    else:
+                        chain_parts.append(task_name_map[step])
+                dependency_chain = " >> ".join(chain_parts)
 
             final_dag_content = updated_content + "\n\n" + sensor_code + "".join(sql_blocks) + "".join(presto_tasks) + dependency_chain + "\n"
 
@@ -202,7 +208,7 @@ if st.button("Generate DAG"):
             st.success(f"DAG generated and saved as: {output_filename}")
 
             b64 = base64.b64encode(final_dag_content.encode()).decode()
-            href = f'<a class="stDownloadButton" href="data:file/text;base64,{b64}" download="{dag_name}.py">\ud83d\udcc5 Download {dag_name}.py</a>'
+            href = f'<a class="stDownloadButton" href="data:file/text;base64,{b64}" download="{dag_name}.py">📥 Download {dag_name}.py</a>'
             st.markdown(href, unsafe_allow_html=True)
 
             st.text_area("Generated DAG File Content", final_dag_content, height=400)
@@ -212,7 +218,6 @@ if st.button("Generate DAG"):
         except Exception as e:
             st.error(f"An unexpected error occurred: {e}")
 
-# --- Bottom Right ---
 st.markdown(
     """
     <div class="bottom-right-text">
