@@ -199,7 +199,7 @@ if st.button("Generate DAG"):
                 if sensor_required:
                     ordered_steps.append([sensor_task_id])
                 dependency_chain = " >> ".join([
-                    step[0] if len(step) == 1 else str([task_name_map[tid] for tid in step])
+                    task_name_map[step[0]] if len(step) == 1 else "[" + ", ".join(task_name_map[tid] for tid in step) + "]"
                     for step in ordered_steps
                 ])
 
